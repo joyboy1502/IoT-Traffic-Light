@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<title>Traffic Light Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  TRAFFIC LIGHT MQTT DASHBOARD
+  Buka langsung dari browser (double-click)
+  Tidak perlu server — bisa dari jaringan mana saja
+
+  CARA PAKAI:
+  1. Isi bagian CONFIG (MQTT_HOST, MQTT_USER, MQTT_PASS)
+  2. Double-click file ini di browser
+  3. Klik "Hubungkan"
+  4. Dashboard otomatis sync dengan ESP32
+
+  LIBRARY: MQTT.js via CDN (butuh koneksi internet)
+-->
+<script src="https://unpkg.com/mqtt@5.3.4/dist/mqtt.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:'DM Sans',sans-serif;background:#f5f5f0;
+  color:#1a1a1a;min-height:100vh;padding:24px 16px;
+}
+.wrap{max-width:480px;margin:0 auto;}
+
+h1{font-size:18px;font-weight:600;letter-spacing:-.3px;margin-bottom:4px;}
+.sub{font-size:13px;color:#888;margin-bottom:24px;font-family:'DM Mono',monospace;display:flex;align-items:center;gap:8px;}
+
+/* Connection dot */
+.dot{width:7px;height:7px;border-radius:50%;background:#ccc;flex-shrink:0;transition:background .3s;}
+.dot.online{background:#18c464;box-shadow:0 0 8px rgba(24,196,100,.4);animation:blink 1.8s ease-in-out infinite;}
+.dot.connecting{background:#d4a000;animation:blink .8s ease-in-out infinite;}
+.dot.error{background:#e03030;}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* Card */
+.card{background:#fff;border-radius:12px;border:1px solid #e8e8e4;padding:20px;margin-bottom:12px;position:relative;}
+.card-title{font-size:11px;font-weight:600;letter-spacing:.08em;color:#aaa;text-transform:uppercase;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;}
+.badge{font-size:10px;font-weight:500;padding:2px 8px;border-radius:4px;letter-spacing:.04em;background:#f0f0eb;color:#888;border:1px solid #e8e8e4;}
+.badge.online{background:#f0fdf4;color:#16b05a;border-color:#c0ecd4;}
+.badge.warn{background:#fffbeb;color:#d4a000;border-color:#f0e0a0;}
+.badge.err{background:#fff0f0;color:#e03030;border-color:#f0c0c0;}
+
+/* Overlay */
+.has-overlay{overflow:hidden;}
+.offline-overlay{
+  position:absolute;inset:0;background:rgba(245,245,240,.85);
+  display:flex;align-items:center;justify-content:center;
+  border-radius:12px;font-size:12px;color:#aaa;letter-spacing:.05em;z-index:10;
+  backdrop-filter:blur(2px);
+}
+
+/* Config */
+.cfg-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;}
+.cfg-full{grid-column:1/-1;}
+.cfg-label{font-size:11px;color:#888;margin-bottom:5px;}
+.cfg-input{
+  width:100%;background:#fafaf8;border:1px solid #e8e8e4;border-radius:8px;
+  color:#1a1a1a;padding:9px 12px;font-family:'DM Mono',monospace;font-size:12px;
+  outline:none;transition:border-color .15s;
+}
+.cfg-input:focus{border-color:#aaa;}
+.cfg-input::placeholder{color:#ccc;}
+.conn-error{
+  display:none;font-size:12px;color:#e03030;background:#fff0f0;
+  border:1px solid #f0c0c0;border-radius:6px;padding:8px 12px;margin-bottom:12px;
+}
+.conn-error.show{display:block;}
+.btn-connect{
+  width:100%;padding:11px;background:#1a1a1a;color:#fff;border:none;
+  border-radius:8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;
+  cursor:pointer;letter-spacing:.02em;transition:background .15s;
+}
+.btn-connect:hover{background:#333;}
+.btn-connect.disconnecting{background:#fff;color:#e03030;border:1.5px solid #e03030;}
+.btn-connect.disconnecting:hover{background:#fff0f0;}
+
+/* Traffic lights */
+.tl-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;}
+.tl-box{background:#fafaf8;border:1px solid #e8e8e4;border-radius:8px;padding:12px;text-align:center;}
+.tl-name{font-size:10px;font-weight:600;letter-spacing:.1em;color:#bbb;text-transform:uppercase;margin-bottom:10px;}
+.lights{display:flex;flex-direction:column;gap:5px;align-items:center;}
+.bulb{width:20px;height:20px;border-radius:50%;transition:background .25s,box-shadow .25s;}
+.r-off{background:#f0e8e8;}.r-on{background:#f03030;box-shadow:0 0 12px rgba(240,48,48,.4);}
+.y-off{background:#f0ede0;}.y-on{background:#f0b800;box-shadow:0 0 12px rgba(240,184,0,.4);}
+.g-off{background:#e0f0e8;}.g-on{background:#18c464;box-shadow:0 0 12px rgba(24,196,100,.4);}
+
+/* Phase */
+.phase-row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;}
+.phase-label{font-size:13px;font-weight:500;}
+.phase-timer{font-family:'DM Mono',monospace;font-size:22px;font-weight:500;letter-spacing:-.5px;}
+.prog-track{height:3px;background:#eee;border-radius:2px;overflow:hidden;}
+.prog-fill{height:100%;background:#1a1a1a;border-radius:2px;transition:width .2s linear;}
+
+/* Device info */
+.dev-grid{display:grid;grid-template-columns:1fr 1fr;gap:0;}
+.dev-item{padding:8px 0;border-bottom:1px solid #f0f0eb;}
+.dev-item:nth-child(even){padding-left:16px;border-left:1px solid #f0f0eb;}
+.dev-item:nth-last-child(-n+2){border-bottom:none;}
+.dev-key{font-size:10px;font-weight:600;letter-spacing:.08em;color:#bbb;text-transform:uppercase;margin-bottom:3px;}
+.dev-val{font-size:13px;font-family:'DM Mono',monospace;font-weight:500;}
+
+/* Duration */
+.dur-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;}
+.dur-item{text-align:center;}
+.dur-label{font-size:10px;font-weight:600;letter-spacing:.08em;color:#aaa;text-transform:uppercase;margin-bottom:8px;}
+.dur-val{font-family:'DM Mono',monospace;font-size:28px;font-weight:500;margin-bottom:8px;line-height:1;}
+.dur-val.red{color:#e03030;}.dur-val.yel{color:#d4a000;}.dur-val.grn{color:#16b05a;}
+.dur-btns{display:flex;gap:6px;justify-content:center;}
+.dur-btn{
+  width:30px;height:30px;background:#fafaf8;border:1px solid #e8e8e4;
+  border-radius:6px;cursor:pointer;font-size:18px;color:#555;
+  display:flex;align-items:center;justify-content:center;transition:background .15s,border-color .15s;
+}
+.dur-btn:hover{background:#f0f0eb;border-color:#ccc;}
+.edit-notice{
+  display:none;font-size:11px;color:#d4a000;background:#fffbeb;
+  border:1px solid #f0e0a0;border-radius:6px;padding:7px 12px;
+  text-align:center;margin-bottom:12px;
+}
+.edit-notice.show{display:block;}
+.btn-apply{
+  width:100%;padding:11px;background:#1a1a1a;color:#fff;border:none;
+  border-radius:8px;font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;
+  cursor:pointer;transition:background .15s;
+}
+.btn-apply:hover:not([disabled]){background:#333;}
+.btn-apply[disabled]{background:#eee;color:#aaa;cursor:not-allowed;}
+.btn-apply.changed{background:#d4a000;}
+.apply-msg{font-size:12px;text-align:center;margin-top:8px;min-height:16px;color:#888;}
+.apply-msg.ok{color:#16b05a;}.apply-msg.err{color:#e03030;}
+
+/* Log */
+.log-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
+.log-body{font-family:'DM Mono',monospace;font-size:11px;line-height:2;max-height:140px;overflow-y:auto;}
+.log-body::-webkit-scrollbar{width:2px;}
+.log-body::-webkit-scrollbar-thumb{background:#ddd;}
+.log-clear{font-size:11px;color:#aaa;background:none;border:1px solid #e8e8e4;border-radius:4px;padding:2px 8px;cursor:pointer;}
+.log-clear:hover{border-color:#ccc;color:#666;}
+.le{display:flex;gap:8px;}
+.le-ts{color:#ccc;flex-shrink:0;}.le-ok{color:#18c464;}.le-err{color:#e03030;}.le-warn{color:#d4a000;}.le-info{color:#aaa;}
+.le-msg{color:#444;word-break:break-all;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Header -->
+  <h1>Traffic Light Control</h1>
+  <div class="sub">
+    <div class="dot" id="dot"></div>
+    <span id="connLabel">Tidak terhubung</span>
+  </div>
+
+  <!-- Config & Connect -->
+  <div class="card">
+    <div class="card-title">
+      Konfigurasi MQTT
+      <span class="badge" id="cfgBadge">Offline</span>
+    </div>
+    <div class="cfg-grid">
+      <div class="cfg-full">
+        <div class="cfg-label">Broker Host (HiveMQ Cloud)</div>
+        <input class="cfg-input" id="cfgHost" type="text" placeholder="xxxx.s1.eu.hivemq.cloud" value="">
+      </div>
+      <div>
+        <div class="cfg-label">Username</div>
+        <input class="cfg-input" id="cfgUser" type="text" placeholder="username">
+      </div>
+      <div>
+        <div class="cfg-label">Password</div>
+        <input class="cfg-input" id="cfgPass" type="password" placeholder="password">
+      </div>
+    </div>
+    <div class="conn-error" id="connError"></div>
+    <button class="btn-connect" id="btnConnect" onclick="toggleConnect()">Hubungkan</button>
+  </div>
+
+  <!-- Live Status -->
+  <div class="card has-overlay" id="statusPanel">
+    <div class="offline-overlay" id="statusOverlay">Menunggu koneksi...</div>
+    <div class="card-title">
+      Status Lampu
+      <span class="badge" id="phaseBadge">–</span>
+    </div>
+    <div class="tl-grid">
+      <div class="tl-box">
+        <div class="tl-name">Utara</div>
+        <div class="lights">
+          <div class="bulb r-off" id="u-r"></div>
+          <div class="bulb y-off" id="u-y"></div>
+          <div class="bulb g-off" id="u-g"></div>
+        </div>
+      </div>
+      <div class="tl-box">
+        <div class="tl-name">Selatan</div>
+        <div class="lights">
+          <div class="bulb r-off" id="s-r"></div>
+          <div class="bulb y-off" id="s-y"></div>
+          <div class="bulb g-off" id="s-g"></div>
+        </div>
+      </div>
+      <div class="tl-box">
+        <div class="tl-name">Timur</div>
+        <div class="lights">
+          <div class="bulb r-off" id="t-r"></div>
+          <div class="bulb y-off" id="t-y"></div>
+          <div class="bulb g-off" id="t-g"></div>
+        </div>
+      </div>
+      <div class="tl-box">
+        <div class="tl-name">Barat</div>
+        <div class="lights">
+          <div class="bulb r-off" id="b-r"></div>
+          <div class="bulb y-off" id="b-y"></div>
+          <div class="bulb g-off" id="b-g"></div>
+        </div>
+      </div>
+    </div>
+    <div class="phase-row">
+      <div class="phase-label" id="phaseText">–</div>
+      <div class="phase-timer" id="phaseTimer">–</div>
+    </div>
+    <div class="prog-track">
+      <div class="prog-fill" id="progFill" style="width:0%"></div>
+    </div>
+  </div>
+
+  <!-- Device Info -->
+  <div class="card has-overlay" id="devPanel">
+    <div class="offline-overlay" id="devOverlay">Menunggu koneksi...</div>
+    <div class="card-title">
+      Info Perangkat
+      <span class="badge online" id="mqttBadge">MQTT</span>
+    </div>
+    <div class="dev-grid">
+      <div class="dev-item"><div class="dev-key">IP Address</div><div class="dev-val" id="devIp">–</div></div>
+      <div class="dev-item"><div class="dev-key">RSSI</div><div class="dev-val" id="devRssi">–</div></div>
+      <div class="dev-item"><div class="dev-key">Update Terakhir</div><div class="dev-val" id="devLast">–</div></div>
+      <div class="dev-item"><div class="dev-key">Fase</div><div class="dev-val" id="devPhase">–</div></div>
+    </div>
+  </div>
+
+  <!-- Duration Control -->
+  <div class="card has-overlay" id="durPanel">
+    <div class="offline-overlay" id="durOverlay">Menunggu koneksi...</div>
+    <div class="card-title">
+      Durasi
+      <span class="badge" id="durBadge">Live Control</span>
+    </div>
+    <div class="edit-notice" id="editInd">Mode edit aktif — tekan Terapkan untuk kirim ke ESP32</div>
+    <div class="dur-row">
+      <div class="dur-item">
+        <div class="dur-label">Merah (s)</div>
+        <div class="dur-val red" id="redVal">4</div>
+        <div class="dur-btns">
+          <button class="dur-btn" onclick="adj('red',-1)">−</button>
+          <button class="dur-btn" onclick="adj('red',+1)">+</button>
+        </div>
+      </div>
+      <div class="dur-item">
+        <div class="dur-label">Kuning (s)</div>
+        <div class="dur-val yel" id="yelVal">2</div>
+        <div class="dur-btns">
+          <button class="dur-btn" onclick="adj('yel',-1)">−</button>
+          <button class="dur-btn" onclick="adj('yel',+1)">+</button>
+        </div>
+      </div>
+      <div class="dur-item">
+        <div class="dur-label">Hijau (s)</div>
+        <div class="dur-val grn" id="grnVal">4</div>
+        <div class="dur-btns">
+          <button class="dur-btn" onclick="adj('grn',-1)">−</button>
+          <button class="dur-btn" onclick="adj('grn',+1)">+</button>
+        </div>
+      </div>
+    </div>
+    <button class="btn-apply" id="btnApply" onclick="applyDuration()" disabled>Terapkan Durasi</button>
+    <div class="apply-msg" id="applyMsg"></div>
+  </div>
+
+  <!-- Log -->
+  <div class="card">
+    <div class="log-head">
+      <div class="card-title" style="margin:0">Log</div>
+      <button class="log-clear" onclick="clearLog()">Bersihkan</button>
+    </div>
+    <div class="log-body" id="logBody"></div>
+  </div>
+
+</div>
+
+<script>
+// ── CONFIG DEFAULT — ubah sesuai kebutuhan ────────────────
+var DEFAULT_HOST = '';   // contoh: 'abc123.s1.eu.hivemq.cloud'
+var DEFAULT_USER = '';
+var DEFAULT_PASS = '';
+
+// ── MQTT Topics (harus sama dengan ESP32) ─────────────────
+var TOPIC_STATUS = 'trafficlight/status';
+var TOPIC_SETDUR = 'trafficlight/setdur';
+var TOPIC_LOG    = 'trafficlight/log';
+var TOPIC_CMD    = 'trafficlight/cmd';
+
+// ── State ─────────────────────────────────────────────────
+var mqttClient   = null;
+var isConnected  = false;
+var isEditing    = false;
+var editTimer    = null;
+var dur          = {red:4, yel:2, grn:4};
+var serverDur    = {red:4, yel:2, grn:4};
+var curPhase     = 0;
+var phaseElapsed = 0;
+var phaseDur     = 4000;
+var lastTick     = Date.now();
+
+var PHASE_NAMES  = ['NS Hijau','NS Kuning','EW Hijau','EW Kuning'];
+var PHASE_BADGES = ['NS-Green','NS-Yellow','EW-Green','EW-Yellow'];
+var LIGHTS = {
+  0:[0,0,1,0,0,1,1,0,0,1,0,0],
+  1:[0,1,0,0,1,0,1,0,0,1,0,0],
+  2:[1,0,0,1,0,0,0,0,1,0,0,1],
+  3:[1,0,0,1,0,0,0,1,0,0,1,0]
+};
+var IDS = ['u-r','u-y','u-g','s-r','s-y','s-g','t-r','t-y','t-g','b-r','b-y','b-g'];
+var CLS = ['r','y','g','r','y','g','r','y','g','r','y','g'];
+
+// ── Init ──────────────────────────────────────────────────
+if (DEFAULT_HOST) document.getElementById('cfgHost').value = DEFAULT_HOST;
+if (DEFAULT_USER) document.getElementById('cfgUser').value = DEFAULT_USER;
+if (DEFAULT_PASS) document.getElementById('cfgPass').value = DEFAULT_PASS;
+
+// ── Log ───────────────────────────────────────────────────
+function ts() {
+  var d=new Date();
+  return [d.getHours(),d.getMinutes(),d.getSeconds()]
+    .map(function(n){return ('0'+n).slice(-2);}).join(':');
+}
+function log(msg, type) {
+  var cls = {ok:'le-ok',err:'le-err',warn:'le-warn',info:'le-info'}[type||'info']||'le-info';
+  var el  = document.createElement('div'); el.className='le';
+  el.innerHTML = '<span class="le-ts">'+ts()+'</span>'
+               + '<span class="'+cls+'">'+(type||'info')+'</span>'
+               + '<span class="le-msg">'+msg+'</span>';
+  var lb = document.getElementById('logBody');
+  lb.appendChild(el); lb.scrollTop=lb.scrollHeight;
+}
+function clearLog() {
+  document.getElementById('logBody').innerHTML='';
+  log('Log dibersihkan','info');
+}
+
+// ── UI Helpers ────────────────────────────────────────────
+function setOverlay(overlayId, show) {
+  document.getElementById(overlayId).style.display = show ? 'flex' : 'none';
+}
+
+function updateConnUI(state) {
+  var dot   = document.getElementById('dot');
+  var label = document.getElementById('connLabel');
+  var btn   = document.getElementById('btnConnect');
+  var badge = document.getElementById('cfgBadge');
+  dot.className = 'dot';
+
+  if (state === 'connected') {
+    dot.classList.add('online');
+    label.textContent = 'Terhubung';
+    badge.textContent = 'Online'; badge.className = 'badge online';
+    btn.textContent = 'Putuskan'; btn.className = 'btn-connect disconnecting';
+    document.getElementById('btnApply').disabled = false;
+    setOverlay('statusOverlay',false);
+    setOverlay('devOverlay',false);
+    setOverlay('durOverlay',false);
+  } else if (state === 'connecting') {
+    dot.classList.add('connecting');
+    label.textContent = 'Menghubungkan...';
+    badge.textContent = 'Menghubungkan...'; badge.className = 'badge warn';
+    btn.textContent = 'Menghubungkan...'; btn.className = 'btn-connect';
+  } else if (state === 'error') {
+    dot.classList.add('error');
+    label.textContent = 'Error';
+    badge.textContent = 'Error'; badge.className = 'badge err';
+    btn.textContent = 'Hubungkan'; btn.className = 'btn-connect';
+    document.getElementById('btnApply').disabled = true;
+    setOverlay('statusOverlay',true);
+    setOverlay('devOverlay',true);
+    setOverlay('durOverlay',true);
+  } else {
+    label.textContent = 'Tidak terhubung';
+    badge.textContent = 'Offline'; badge.className = 'badge';
+    btn.textContent = 'Hubungkan'; btn.className = 'btn-connect';
+    document.getElementById('btnApply').disabled = true;
+    setOverlay('statusOverlay',true);
+    setOverlay('devOverlay',true);
+    setOverlay('durOverlay',true);
+  }
+}
+
+// ── Traffic light visual ──────────────────────────────────
+function updateLights(phase) {
+  var L = LIGHTS[phase] || LIGHTS[0];
+  for (var i=0;i<12;i++) {
+    var el = document.getElementById(IDS[i]);
+    if (!el) continue;
+    el.className = 'bulb '+(L[i] ? CLS[i]+'-on' : CLS[i]+'-off');
+  }
+  document.getElementById('phaseBadge').textContent = PHASE_BADGES[phase]||'–';
+  document.getElementById('phaseText').textContent  = PHASE_NAMES[phase]||'–';
+  document.getElementById('devPhase').textContent   = PHASE_NAMES[phase]||'–';
+}
+
+function getDurForPhase(phase) {
+  if (phase===0||phase===2) return dur.grn*1000;
+  if (phase===1||phase===3) return dur.yel*1000;
+  return dur.red*1000;
+}
+
+// ── Countdown ticker ──────────────────────────────────────
+setInterval(function() {
+  if (!isConnected) return;
+  var now  = Date.now();
+  var dt   = now-lastTick; lastTick=now;
+  phaseElapsed += dt;
+  var remaining = Math.max(0, phaseDur-phaseElapsed);
+  document.getElementById('phaseTimer').textContent = (remaining/1000).toFixed(1)+'s';
+  document.getElementById('progFill').style.width = Math.min(100,(phaseElapsed/phaseDur)*100)+'%';
+}, 200);
+
+// ── Handle status dari ESP32 ──────────────────────────────
+function handleStatus(data) {
+  curPhase     = data.phase||0;
+  phaseElapsed = data.elapsed||0;
+  phaseDur     = getDurForPhase(curPhase);
+  lastTick     = Date.now();
+  updateLights(curPhase);
+  if (data.ip)   document.getElementById('devIp').textContent   = data.ip;
+  if (data.rssi) document.getElementById('devRssi').textContent = data.rssi+' dBm';
+  document.getElementById('devLast').textContent = ts();
+  if (!isEditing) {
+    if (data.red) { dur.red=Math.round(data.red/1000); serverDur.red=dur.red; document.getElementById('redVal').textContent=dur.red; }
+    if (data.yel) { dur.yel=Math.round(data.yel/1000); serverDur.yel=dur.yel; document.getElementById('yelVal').textContent=dur.yel; }
+    if (data.grn) { dur.grn=Math.round(data.grn/1000); serverDur.grn=dur.grn; document.getElementById('grnVal').textContent=dur.grn; }
+  }
+}
+
+// ── Duration edit ─────────────────────────────────────────
+function enterEditMode() {
+  isEditing = true;
+  document.getElementById('editInd').classList.add('show');
+  document.getElementById('btnApply').classList.add('changed');
+  if (editTimer) clearTimeout(editTimer);
+  editTimer = setTimeout(function() {
+    exitEditMode(false);
+    log('Mode edit timeout — nilai dikembalikan dari server','warn');
+  }, 20000);
+}
+
+function exitEditMode(applied) {
+  isEditing = false;
+  if (editTimer) { clearTimeout(editTimer); editTimer=null; }
+  document.getElementById('editInd').classList.remove('show');
+  document.getElementById('btnApply').classList.remove('changed');
+  if (!applied) {
+    dur.red=serverDur.red; document.getElementById('redVal').textContent=dur.red;
+    dur.yel=serverDur.yel; document.getElementById('yelVal').textContent=dur.yel;
+    dur.grn=serverDur.grn; document.getElementById('grnVal').textContent=dur.grn;
+  }
+}
+
+window.adj = function(color, delta) {
+  if (!isConnected) return;
+  enterEditMode();
+  dur[color] = Math.max(1, Math.min(60, dur[color]+delta));
+  document.getElementById(color+'Val').textContent = dur[color];
+};
+
+window.applyDuration = function() {
+  if (!isConnected||!mqttClient) return;
+  var msg = document.getElementById('applyMsg');
+  msg.className='apply-msg'; msg.textContent='';
+  var payload = JSON.stringify({red:dur.red*1000, yel:dur.yel*1000, grn:dur.grn*1000});
+  try {
+    mqttClient.publish(TOPIC_SETDUR, payload, {qos:1});
+    msg.className='apply-msg ok';
+    msg.textContent='Dikirim via MQTT — menunggu konfirmasi ESP32';
+    log('Durasi dikirim: M='+dur.red+'s K='+dur.yel+'s H='+dur.grn+'s','ok');
+    serverDur.red=dur.red; serverDur.yel=dur.yel; serverDur.grn=dur.grn;
+    exitEditMode(true);
+    setTimeout(function(){msg.textContent='';},4000);
+  } catch(e) {
+    msg.className='apply-msg err';
+    msg.textContent='Gagal publish: '+e.message;
+    log('Gagal publish MQTT: '+e.message,'err');
+  }
+};
+
+// ── MQTT Connect / Disconnect ─────────────────────────────
+window.toggleConnect = function() {
+  if (isConnected&&mqttClient) {
+    mqttClient.end(true);
+    isConnected=false;
+    updateConnUI('disconnected');
+    log('Terputus','warn');
+    return;
+  }
+
+  var host = document.getElementById('cfgHost').value.trim();
+  var user = document.getElementById('cfgUser').value.trim();
+  var pass = document.getElementById('cfgPass').value.trim();
+  var errEl = document.getElementById('connError');
+  errEl.className='conn-error'; errEl.textContent='';
+
+  if (!host||!user||!pass) {
+    errEl.className='conn-error show';
+    errEl.textContent='Host, username, dan password harus diisi';
+    return;
+  }
+
+  updateConnUI('connecting');
+  log('Menghubungkan ke '+host+'...','info');
+
+  var clientId = 'Dashboard-'+Math.random().toString(16).substr(2,8);
+  mqttClient = mqtt.connect('wss://'+host+':8884/mqtt', {
+    clientId:clientId, username:user, password:pass,
+    keepalive:30, reconnectPeriod:5000, connectTimeout:10000
+  });
+
+  mqttClient.on('connect', function() {
+    isConnected=true;
+    updateConnUI('connected');
+    log('Terhubung ke broker MQTT!','ok');
+    log('Client ID: '+clientId,'info');
+    errEl.className='conn-error';
+    mqttClient.subscribe(TOPIC_STATUS,{qos:0});
+    mqttClient.subscribe(TOPIC_LOG,{qos:0});
+    log('Subscribe: '+TOPIC_STATUS+', '+TOPIC_LOG,'info');
+    mqttClient.publish(TOPIC_CMD,'status');
+  });
+
+  mqttClient.on('message', function(topic, payload) {
+    var msg = payload.toString();
+    if (topic===TOPIC_STATUS) {
+      try { handleStatus(JSON.parse(msg)); } catch(e) { log('JSON parse error: '+e.message,'err'); }
+    }
+    if (topic===TOPIC_LOG) {
+      try { var d=JSON.parse(msg); log('[ESP32] '+d.msg, d.type==='err'?'err':'info'); }
+      catch(e) { log('[ESP32] '+msg,'info'); }
+    }
+  });
+
+  mqttClient.on('error', function(err) {
+    log('MQTT Error: '+err.message,'err');
+    errEl.className='conn-error show'; errEl.textContent=err.message;
+    updateConnUI('error'); isConnected=false;
+  });
+
+  mqttClient.on('reconnect', function() { log('Menghubungkan ulang...','warn'); updateConnUI('connecting'); isConnected=false; });
+  mqttClient.on('offline',   function() { log('Broker tidak terjangkau','warn'); updateConnUI('error'); isConnected=false; });
+  mqttClient.on('close',     function() {
+    if (isConnected) { isConnected=false; updateConnUI('disconnected'); log('Koneksi tertutup','warn'); }
+  });
+};
+
+// ── Init ──────────────────────────────────────────────────
+updateConnUI('disconnected');
+log('Dashboard siap — isi config dan klik Hubungkan','info');
+log('Pastikan ESP32 sudah running dan connect ke broker yang sama','info');
+</script>
+</body>
+</html>
